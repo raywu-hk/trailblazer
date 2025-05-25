@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-axum = "0.8.4"
-tokio = { version = "1.45.0", features = ["rt", "rt-multi-thread", "macros"] }
-reqwest = "0.12.15"
+hyper = { version = "1", features = ["http1"] }
+tokio = { version = "1", features = ["full"] }
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["full"] }
+
+[dev-dependencies]
+wiremock = "0.6"
+reqwest = { version = "0.12", features = ["default"] }
