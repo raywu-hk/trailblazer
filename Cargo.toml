@@ -8,6 +8,10 @@ hyper = { version = "1", features = ["http1"] }
 tokio = { version = "1", features = ["full"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["full"] }
+config = "0.15"
+thiserror = "2"
+dotenv = "0.15"
+serde = { version = "1" }
 
 [dev-dependencies]
 wiremock = "0.6"

@@ -2,6 +2,7 @@ mod constants;
 mod load_balancer;
 mod worker;
 
+use config::Config;
 pub use constants::*;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
@@ -9,29 +10,47 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 pub use load_balancer::*;
+use serde::Deserialize;
 use std::error::Error;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
+
+#[derive(Error, Debug)]
+pub enum ApplicationError {
+    #[error("Config file not found:{0}")]
+    ConfigFileNotFound(String),
+    #[error("Env var {0} not found")]
+    EnvConfigNotFound(String),
+    #[error("Config Invalid")]
+    ConfigInvalid,
+    #[error("Unexpected Error")]
+    UnexpectedError,
+}
+
+#[derive(Debug, Deserialize)]
+struct Settings {
+    workers: Vec<String>,
+}
 
 pub struct Application {
     pub listener: TcpListener,
     load_balancer: Arc<RwLock<LoadBalancer>>,
 }
 impl Application {
-    pub async fn new(address: &str) -> Result<Self, Box<dyn Error>> {
-        let worker_hosts = vec![
-            "localhost:3000".to_string(),
-            "localhost:3001".to_string(),
-        ];
+    pub async fn new(address: &str) -> Result<Self, ApplicationError> {
+        let settings = Self::load_config()?;
         let load_balancer = Arc::new(RwLock::new(
-            LoadBalancer::new(worker_hosts).expect("failed to create load balancer"),
+            LoadBalancer::new(settings.workers).expect("failed to create load balancer"),
         ));
 
         let addr = SocketAddr::from_str(address).unwrap();
-        let listener = TcpListener::bind(addr).await?;
+        let listener = TcpListener::bind(addr)
+            .await
+            .map_err(|_| ApplicationError::UnexpectedError)?;
 
         let app = Self {
             listener,
@@ -62,10 +81,31 @@ impl Application {
             });
         }
     }
+    fn load_config() -> Result<Settings, ApplicationError> {
+        let config = Config::builder()
+            .add_source(config::File::with_name(&CONFIG_FILE_PATH))
+            .build()
+            .map_err(|_| ApplicationError::ConfigFileNotFound(CONFIG_FILE_PATH.to_string()))?;
+
+        config
+            .try_deserialize()
+            .map_err(|_| ApplicationError::ConfigInvalid)
+    }
 }
 async fn handle(
     req: Request<Incoming>,
     load_balancer: Arc<RwLock<LoadBalancer>>,
 ) -> Result<Response<Incoming>, Box<dyn Error + Send + Sync>> {
     load_balancer.write().await.forward_request(req).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn worker_config_should_loaded() {
+        let setting = Application::load_config().unwrap();
+
+        assert_eq!(setting.workers.is_empty(), false);
+    }
 }
