@@ -2,13 +2,15 @@ mod constants;
 mod load_balancer;
 mod worker;
 
+use crate::worker::Worker;
 use config::Config;
 pub use constants::*;
 use hyper::body::Incoming;
-use hyper::server::conn::http1;
+
 use hyper::service::service_fn;
 use hyper::{Request, Response};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto;
 pub use load_balancer::*;
 use serde::Deserialize;
 use std::error::Error;
@@ -38,13 +40,21 @@ struct Settings {
 
 pub struct Application {
     pub listener: TcpListener,
+    pub workers: Vec<Arc<Worker>>,
     load_balancer: Arc<RwLock<LoadBalancer>>,
 }
 impl Application {
     pub async fn new(address: &str) -> Result<Self, ApplicationError> {
         let settings = Self::load_config()?;
+        let mut workers = Vec::with_capacity(settings.workers.len());
+        let mut worker_hosts = Vec::with_capacity(settings.workers.len());
+        for (idx, address) in settings.workers.iter().enumerate() {
+            workers.push(Arc::new(Worker::new(address, idx)));
+            worker_hosts.push(address.to_string());
+        }
+
         let load_balancer = Arc::new(RwLock::new(
-            LoadBalancer::new(settings.workers).expect("failed to create load balancer"),
+            LoadBalancer::new(worker_hosts).expect("failed to create load balancer"),
         ));
 
         let addr = SocketAddr::from_str(address).unwrap();
@@ -54,6 +64,7 @@ impl Application {
 
         let app = Self {
             listener,
+            workers,
             load_balancer: load_balancer.clone(),
         };
         Ok(app)
@@ -71,9 +82,12 @@ impl Application {
             let load_balancer = self.load_balancer.clone();
             tokio::task::spawn(async move {
                 // Finally, we bind the incoming connection to our `hello` service
-                if let Err(err) = http1::Builder::new()
+                if let Err(err) = auto::Builder::new(TokioExecutor::new())
                     // `service_fn` converts our function in a `Service`
-                    .serve_connection(io, service_fn(|req| handle(req, load_balancer.clone())))
+                    .serve_connection(
+                        io,
+                        service_fn(|req| Self::handle(req, load_balancer.clone())),
+                    )
                     .await
                 {
                     eprintln!("Error serving connection: {:?}", err);
@@ -81,6 +95,14 @@ impl Application {
             });
         }
     }
+
+    async fn handle(
+        req: Request<Incoming>,
+        load_balancer: Arc<RwLock<LoadBalancer>>,
+    ) -> Result<Response<Incoming>, Box<dyn Error + Send + Sync>> {
+        load_balancer.write().await.forward_request(req).await
+    }
+
     fn load_config() -> Result<Settings, ApplicationError> {
         let config = Config::builder()
             .add_source(config::File::with_name(&CONFIG_FILE_PATH))
@@ -91,12 +113,6 @@ impl Application {
             .try_deserialize()
             .map_err(|_| ApplicationError::ConfigInvalid)
     }
-}
-async fn handle(
-    req: Request<Incoming>,
-    load_balancer: Arc<RwLock<LoadBalancer>>,
-) -> Result<Response<Incoming>, Box<dyn Error + Send + Sync>> {
-    load_balancer.write().await.forward_request(req).await
 }
 
 #[cfg(test)]
