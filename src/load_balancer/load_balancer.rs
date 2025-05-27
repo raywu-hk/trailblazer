@@ -24,7 +24,7 @@ impl LoadBalancer {
     }
 
     pub async fn forward_request(&mut self, req: Request<Incoming>) -> Result<Response<Incoming>> {
-        let mut worker_uri = self.get_worker().to_string();
+        let mut worker_uri = self.get_next_worker().to_string();
 
         let stream = TcpStream::connect(&worker_uri).await?;
         let io = TokioIo::new(stream);
@@ -63,10 +63,15 @@ impl LoadBalancer {
         Ok(response)
     }
 
-    fn get_worker(&mut self) -> &String {
+    fn get_next_worker(&mut self) -> &String {
         // Use a round-robin strategy to select a worker
-        let worker = self.worker_hosts.get(self.current_worker).unwrap();
-        self.current_worker = (self.current_worker + 1) % self.worker_hosts.len();
-        worker
+        // let idx = self.worker_connections_count.read().await.iter().enumerate()
+        //     .min_by_key(|&(_idx, &count)| count)
+        //     .map(|(idx, _count)| idx)
+        //     .unwrap();
+        // *self.current_worker.write().await = idx;
+        let worker_idx = (self.current_worker + 1) % self.worker_hosts.len();
+        self.current_worker = worker_idx;
+        self.worker_hosts.get(worker_idx).unwrap()
     }
 }

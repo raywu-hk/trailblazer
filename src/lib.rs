@@ -48,8 +48,8 @@ impl Application {
         let settings = Self::load_config()?;
         let mut workers = Vec::with_capacity(settings.workers.len());
         let mut worker_hosts = Vec::with_capacity(settings.workers.len());
-        for (idx, address) in settings.workers.iter().enumerate() {
-            workers.push(Arc::new(Worker::new(address, idx)));
+        for address in &settings.workers {
+            workers.push(Arc::new(Worker::new(address)));
             worker_hosts.push(address.to_string());
         }
 
@@ -69,7 +69,7 @@ impl Application {
         };
         Ok(app)
     }
-    pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+    pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         // We start a loop to continuously accept incoming connections
         loop {
             let (stream, _) = self.listener.accept().await?;

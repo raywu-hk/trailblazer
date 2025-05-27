@@ -1,4 +1,6 @@
 use crate::helper::TestApp;
+use futures::future::join_all;
+use reqwest::Client;
 
 #[tokio::test]
 async fn canary_test() {
@@ -26,22 +28,29 @@ async fn canary_test() {
     //     .mount(&mock_server2)
     //     .await;
 
-    let app = TestApp::new().await;
+    let test_app = TestApp::new().await;
+    let address = format!("http://{}/health", test_app.address.clone());
+    let app = test_app.app.clone();
 
-    let address = format!("http://{}/health", app.address.clone());
+    tokio::spawn(async move { test_app.run_worker().await });
+    tokio::spawn(async move { app.run().await });
 
-    for _ in 0..4 {
-        let res = app
-            .http_client
-            .get(address.as_str())
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .is_success();
-        assert_eq!(res, true);
-    }
+    let handles: Vec<_> = (0..20)
+        .map(|_| {
+            let client = Client::new();
+            let uri = address.clone();
+            tokio::spawn(async move { client.get(uri).send().await.unwrap().status().is_success() })
+        })
+        .collect();
+    let results = join_all(handles).await;
 
+    assert_eq!(
+        results.iter().all(|x| match x {
+            Ok(success) => success.eq(&true),
+            _ => false,
+        }),
+        true
+    );
     // assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);
     // assert_eq!(mock_server2.received_requests().await.unwrap().len(), 1);
 }
