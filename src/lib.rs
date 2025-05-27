@@ -7,10 +7,10 @@ use config::Config;
 pub use constants::*;
 use hyper::body::Incoming;
 
+use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use hyper_util::server::conn::auto;
+use hyper_util::rt::TokioIo;
 pub use load_balancer::*;
 use serde::Deserialize;
 use std::error::Error;
@@ -82,7 +82,7 @@ impl Application {
             let load_balancer = self.load_balancer.clone();
             tokio::task::spawn(async move {
                 // Finally, we bind the incoming connection to our `hello` service
-                if let Err(err) = auto::Builder::new(TokioExecutor::new())
+                if let Err(err) = http1::Builder::new()
                     // `service_fn` converts our function in a `Service`
                     .serve_connection(
                         io,
