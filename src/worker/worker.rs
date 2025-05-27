@@ -37,14 +37,18 @@ impl Worker {
             connection_count: Arc::new(RwLock::new(0)),
         }
     }
-    pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+    pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let listener = TcpListener::bind(self.socket_addr).await?;
         // let worker_name = self.name;
         // We start a loop to continuously accept incoming connections
 
         loop {
             let (stream, _) = listener.accept().await?;
-            println!("worker {} received request", self.socket_addr.port());
+            println!(
+                "worker {} received request, current connection counts:{}",
+                self.socket_addr.port(),
+                self.connection_count.read().await
+            );
             // Use an adapter to access something implementing `tokio::io` traits as if they implement
             // `hyper::rt` IO traits.
             let io = TokioIo::new(stream);
@@ -52,24 +56,28 @@ impl Worker {
             // Spawn a tokio task to serve multiple connections concurrently
             tokio::task::spawn(async move {
                 *connection_count.write().await += 1;
-                let count_snapshot = *connection_count.read().await;
                 if let Err(err) = http1::Builder::new()
                     .serve_connection(
                         io,
-                        service_fn(move |req| Self::handler(req, count_snapshot)),
+                        service_fn(move |req| Self::handler(req, connection_count.clone())),
                     )
                     .await
                 {
                     eprintln!("Error serving connection: {:?}", err);
                 };
-                *connection_count.write().await -= 1;
             });
         }
     }
     async fn handler(
         req: Request<Incoming>,
-        count_snapshot: usize,
+        count_snapshot: Arc<RwLock<usize>>,
     ) -> Result<Response<BoxBody<Bytes, Infallible>>, Box<dyn Error + Send + Sync>> {
+        println!(
+            "Worker handling request on path: {} with connection count: {:?}",
+            req.uri().path(),
+            count_snapshot
+        );
+
         match req.uri().path() {
             "/health" => {
                 // println!("Health check worker {:?}", worker_name);
@@ -77,7 +85,7 @@ impl Worker {
 
                 let res_body = HealthResponseBody {
                     status: WorkerStatus::UP,
-                    connection_count: count_snapshot,
+                    connection_count: *count_snapshot.read().await,
                 };
 
                 let json_body = serde_json::to_string(&res_body)?;
@@ -85,10 +93,11 @@ impl Worker {
                 let res = Response::builder()
                     .status(StatusCode::OK)
                     .body(BoxBody::new(json_body))?;
-
+                *count_snapshot.write().await -= 1;
                 Ok(res)
             }
             _ => {
+                *count_snapshot.write().await -= 1;
                 // println!("Other worker {:?}", worker_name);
                 Ok(Response::builder()
                     .status(StatusCode::OK)

@@ -35,7 +35,7 @@ async fn canary_test() {
     tokio::spawn(async move { test_app.run_worker().await });
     tokio::spawn(async move { app.run().await });
 
-    let handles: Vec<_> = (0..20)
+    let handles: Vec<_> = (0..2000)
         .map(|_| {
             let client = Client::new();
             let uri = address.clone();
