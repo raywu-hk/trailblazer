@@ -1,13 +1,18 @@
 use hyper::body::Incoming;
 use hyper::{Request, Response, Uri};
-use hyper_util::rt::TokioIo;
+use hyper_util::client::legacy::Client;
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::rt::{TokioExecutor, TokioTimer};
+use std::error::Error;
 use std::str::FromStr;
-use tokio::net::TcpStream;
+use std::time::Duration;
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
 pub struct LoadBalancer {
     worker_hosts: Vec<String>,
+    // worker_connection_count: Arc<RwLock<HashMap<String, isize>>>,
+    client: Client<HttpConnector, Incoming>,
     current_worker: usize,
 }
 
@@ -16,26 +21,29 @@ impl LoadBalancer {
         if worker_hosts.is_empty() {
             return Err("No worker hosts provided".into());
         }
+        // let worker_health = worker_hosts.iter().map(|host| (host.clone(), 0)).collect();
+        let mut connector = HttpConnector::new();
+        connector.set_nodelay(true);
+        connector.set_keepalive(Some(Duration::from_secs(5)));
+        connector.enforce_http(false);
+        let client = Client::builder(TokioExecutor::new())
+            .pool_timer(TokioTimer::new())
+            .pool_idle_timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(10)
+            .build(connector);
 
         Ok(Self {
             worker_hosts,
             current_worker: 0,
+            client,
+            // worker_connection_count: Arc::new(RwLock::new(worker_health)),
         })
     }
 
     pub async fn forward_request(&mut self, req: Request<Incoming>) -> Result<Response<Incoming>> {
-        let mut worker_uri = self.get_next_worker().to_string();
+        let worker_addr = self.get_next_worker().to_string();
 
-        let stream = TcpStream::connect(&worker_uri).await?;
-        let io = TokioIo::new(stream);
-
-        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
-        tokio::task::spawn(async move {
-            if let Err(err) = conn.await {
-                println!("Connection failed: {:?}", err);
-            }
-        });
-
+        let mut worker_uri = worker_addr.clone();
         // Extract the path and query from the original request
         if let Some(path_and_query) = req.uri().path_and_query() {
             worker_uri.push_str(path_and_query.as_str());
@@ -51,17 +59,37 @@ impl LoadBalancer {
         let mut new_req = Request::builder()
             .method(req.method())
             .uri(new_uri)
-            .body(req.into_body())
-            .expect("request builder");
+            .body(req.into_body())?;
 
         // Copy headers from the original request
         for (key, value) in headers.iter() {
             new_req.headers_mut().insert(key, value.clone());
         }
 
-        let response = sender.send_request(new_req).await?;
-        Ok(response)
+        // self.update_connection_count(&worker_addr, 1).await;
+        // println!("{:?}", self.worker_connection_count.read().await);
+
+        let response = self.client.request(new_req).await;
+
+        match response {
+            Ok(res) => {
+                // self.update_connection_count(&worker_addr, -1).await;
+                Ok(res)
+            }
+            Err(err) => {
+                // self.update_connection_count(&worker_addr, -1).await;
+                Err(err.into())
+            }
+        }
     }
+
+    /*
+    async fn update_connection_count(&mut self, worker_uri: &str, count: isize) {
+        if let Some(curr_count) = self.worker_connection_count.write().await.get_mut(worker_uri) {
+            *curr_count += count;
+        }
+    }
+    */
 
     fn get_next_worker(&mut self) -> &String {
         // Use a round-robin strategy to select a worker

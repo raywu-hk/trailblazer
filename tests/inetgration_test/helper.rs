@@ -18,11 +18,4 @@ impl TestApp {
 
         Self { app, address }
     }
-    pub async fn run_worker(&self) {
-        // Run the auth service in a separate async task
-        // to avoid blocking the main test thread.
-        for worker in self.app.workers.clone() {
-            tokio::spawn(async move { worker.run().await });
-        }
-    }
 }

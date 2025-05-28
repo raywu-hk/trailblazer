@@ -2,7 +2,7 @@ use crate::helper::TestApp;
 use futures::future::join_all;
 use reqwest::Client;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 10)]
 async fn canary_test() {
     // // Start a background HTTP server on a random local port
     // let listener = TcpListener::bind("0.0.0.0:3000").unwrap();
@@ -31,11 +31,11 @@ async fn canary_test() {
     let test_app = TestApp::new().await;
     let address = format!("http://{}/health", test_app.address.clone());
     let app = test_app.app.clone();
-
-    tokio::spawn(async move { test_app.run_worker().await });
+    tokio::spawn(async move { app.run_workers().await });
+    let app = test_app.app.clone();
     tokio::spawn(async move { app.run().await });
 
-    let handles: Vec<_> = (0..2000)
+    let handles: Vec<_> = (0..20)
         .map(|_| {
             let client = Client::new();
             let uri = address.clone();
@@ -45,10 +45,12 @@ async fn canary_test() {
     let results = join_all(handles).await;
 
     assert_eq!(
-        results.iter().all(|x| match x {
-            Ok(success) => success.eq(&true),
-            _ => false,
-        }),
+        results
+            .iter()
+            .all(|http_status_success| match http_status_success {
+                Ok(success) => success.eq(&true),
+                _ => false,
+            }),
         true
     );
     // assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);

@@ -29,8 +29,8 @@ pub enum ApplicationError {
     EnvConfigNotFound(String),
     #[error("Config Invalid")]
     ConfigInvalid,
-    #[error("Unexpected Error")]
-    UnexpectedError,
+    #[error("Port{0} is not available")]
+    PortCanNotBind(u16),
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,7 +60,7 @@ impl Application {
         let addr = SocketAddr::from_str(address).unwrap();
         let listener = TcpListener::bind(addr)
             .await
-            .map_err(|_| ApplicationError::UnexpectedError)?;
+            .map_err(|_| ApplicationError::PortCanNotBind(addr.port()))?;
 
         let app = Self {
             listener,
@@ -93,6 +93,12 @@ impl Application {
                     eprintln!("Error serving connection: {:?}", err);
                 }
             });
+        }
+    }
+
+    pub async fn run_workers(&self) {
+        for worker in self.workers.clone() {
+            tokio::spawn(async move { worker.run().await });
         }
     }
 
