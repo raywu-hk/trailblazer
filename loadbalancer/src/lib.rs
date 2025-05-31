@@ -1,13 +1,12 @@
 mod constants;
 mod load_balancer;
-mod worker;
-
 use config::Config;
 pub use constants::*;
-use hyper::body::Incoming;
+use http_body_util::{BodyExt, Empty, combinators::BoxBody};
+use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Request, Response};
+use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 pub use load_balancer::*;
 use serde::Deserialize;
@@ -27,8 +26,10 @@ pub enum ApplicationError {
     EnvConfigNotFound(String),
     #[error("Config Invalid")]
     ConfigInvalid,
-    #[error("Unexpected Error")]
-    UnexpectedError,
+    #[error("Port{0} is not available")]
+    PortCanNotBind(u16),
+    #[error("Server Error")]
+    ServerError,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,14 +44,19 @@ pub struct Application {
 impl Application {
     pub async fn new(address: &str) -> Result<Self, ApplicationError> {
         let settings = Self::load_config()?;
+        let mut worker_hosts = Vec::with_capacity(settings.workers.len());
+        for address in &settings.workers {
+            worker_hosts.push(address.to_string());
+        }
+
         let load_balancer = Arc::new(RwLock::new(
-            LoadBalancer::new(settings.workers).expect("failed to create load balancer"),
+            LoadBalancer::new(worker_hosts).expect("failed to create load balancer"),
         ));
 
         let addr = SocketAddr::from_str(address).unwrap();
         let listener = TcpListener::bind(addr)
             .await
-            .map_err(|_| ApplicationError::UnexpectedError)?;
+            .map_err(|_| ApplicationError::PortCanNotBind(addr.port()))?;
 
         let app = Self {
             listener,
@@ -58,7 +64,7 @@ impl Application {
         };
         Ok(app)
     }
-    pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+    pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         // We start a loop to continuously accept incoming connections
         loop {
             let (stream, _) = self.listener.accept().await?;
@@ -73,7 +79,10 @@ impl Application {
                 // Finally, we bind the incoming connection to our `hello` service
                 if let Err(err) = http1::Builder::new()
                     // `service_fn` converts our function in a `Service`
-                    .serve_connection(io, service_fn(|req| handle(req, load_balancer.clone())))
+                    .serve_connection(
+                        io,
+                        service_fn(|req| Self::handle(req, load_balancer.clone())),
+                    )
                     .await
                 {
                     eprintln!("Error serving connection: {:?}", err);
@@ -81,6 +90,39 @@ impl Application {
             });
         }
     }
+
+    async fn handle(
+        req: Request<Incoming>,
+        load_balancer: Arc<RwLock<LoadBalancer>>,
+    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, ApplicationError> {
+        match req.uri().path() {
+            "/switch" => {
+                load_balancer
+                    .write()
+                    .await
+                    .switch_current_lb_strategy()
+                    .await;
+                Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .body(
+                        Empty::<Bytes>::new()
+                            .map_err(|never| match never {})
+                            .boxed(),
+                    )
+                    .map_err(|_| ApplicationError::ServerError)?)
+            }
+            _ => {
+                let res = load_balancer
+                    .write()
+                    .await
+                    .forward_request(req)
+                    .await
+                    .map_err(|_| ApplicationError::ServerError)?;
+                Ok(res.map(|body| body.boxed()))
+            }
+        }
+    }
+
     fn load_config() -> Result<Settings, ApplicationError> {
         let config = Config::builder()
             .add_source(config::File::with_name(&CONFIG_FILE_PATH))
@@ -91,12 +133,6 @@ impl Application {
             .try_deserialize()
             .map_err(|_| ApplicationError::ConfigInvalid)
     }
-}
-async fn handle(
-    req: Request<Incoming>,
-    load_balancer: Arc<RwLock<LoadBalancer>>,
-) -> Result<Response<Incoming>, Box<dyn Error + Send + Sync>> {
-    load_balancer.write().await.forward_request(req).await
 }
 
 #[cfg(test)]
