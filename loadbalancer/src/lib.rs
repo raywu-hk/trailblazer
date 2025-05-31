@@ -1,15 +1,12 @@
 mod constants;
 mod load_balancer;
-mod worker;
-
-use crate::worker::Worker;
 use config::Config;
 pub use constants::*;
-use hyper::body::Incoming;
-
+use http_body_util::{BodyExt, Empty, combinators::BoxBody};
+use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Request, Response};
+use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 pub use load_balancer::*;
 use serde::Deserialize;
@@ -31,6 +28,8 @@ pub enum ApplicationError {
     ConfigInvalid,
     #[error("Port{0} is not available")]
     PortCanNotBind(u16),
+    #[error("Server Error")]
+    ServerError,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,16 +39,13 @@ struct Settings {
 
 pub struct Application {
     pub listener: TcpListener,
-    pub workers: Vec<Arc<Worker>>,
     load_balancer: Arc<RwLock<LoadBalancer>>,
 }
 impl Application {
     pub async fn new(address: &str) -> Result<Self, ApplicationError> {
         let settings = Self::load_config()?;
-        let mut workers = Vec::with_capacity(settings.workers.len());
         let mut worker_hosts = Vec::with_capacity(settings.workers.len());
         for address in &settings.workers {
-            workers.push(Arc::new(Worker::new(address)));
             worker_hosts.push(address.to_string());
         }
 
@@ -64,7 +60,6 @@ impl Application {
 
         let app = Self {
             listener,
-            workers,
             load_balancer: load_balancer.clone(),
         };
         Ok(app)
@@ -96,17 +91,36 @@ impl Application {
         }
     }
 
-    pub async fn run_workers(&self) {
-        for worker in self.workers.clone() {
-            tokio::spawn(async move { worker.run().await });
-        }
-    }
-
     async fn handle(
         req: Request<Incoming>,
         load_balancer: Arc<RwLock<LoadBalancer>>,
-    ) -> Result<Response<Incoming>, Box<dyn Error + Send + Sync>> {
-        load_balancer.write().await.forward_request(req).await
+    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, ApplicationError> {
+        match req.uri().path() {
+            "/switch" => {
+                load_balancer
+                    .write()
+                    .await
+                    .switch_current_lb_strategy()
+                    .await;
+                Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .body(
+                        Empty::<Bytes>::new()
+                            .map_err(|never| match never {})
+                            .boxed(),
+                    )
+                    .map_err(|_| ApplicationError::ServerError)?)
+            }
+            _ => {
+                let res = load_balancer
+                    .write()
+                    .await
+                    .forward_request(req)
+                    .await
+                    .map_err(|_| ApplicationError::ServerError)?;
+                Ok(res.map(|body| body.boxed()))
+            }
+        }
     }
 
     fn load_config() -> Result<Settings, ApplicationError> {

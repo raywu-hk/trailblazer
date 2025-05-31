@@ -29,11 +29,11 @@ async fn canary_test() {
     //     .await;
 
     let test_app = TestApp::new().await;
-    let address = format!("http://{}/health", test_app.address.clone());
-    let app = test_app.app.clone();
-    tokio::spawn(async move { app.run_workers().await });
-    let app = test_app.app.clone();
-    tokio::spawn(async move { app.run().await });
+    let address = format!("http://{}/health", test_app.lb_address.clone());
+    let worker = test_app.worker.clone();
+    tokio::spawn(async move { worker.run().await });
+    let load_balancer = test_app.load_balancer.clone();
+    tokio::spawn(async move { load_balancer.run().await });
 
     let handles: Vec<_> = (0..20)
         .map(|_| {

@@ -1,0 +1,13 @@
+[package]
+name = "intetgration"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+worker = { path = "../worker" }
+loadbalancer = { path = "../loadbalancer" }
+
+[dev-dependencies]
+tokio = "1"
+futures = "0.3"
+reqwest = "0.12"

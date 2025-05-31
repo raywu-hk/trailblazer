@@ -40,19 +40,19 @@ impl Worker {
         let listener = TcpListener::bind(self.socket_addr).await?;
         // let worker_name = self.name;
         // We start a loop to continuously accept incoming connections
-
         loop {
             let (stream, _) = listener.accept().await?;
             // Use an adapter to access something implementing `tokio::io` traits as if they implement
             // `hyper::rt` IO traits.
             let io = TokioIo::new(stream);
             let connection_count = self.connection_count.clone();
+            let port = self.socket_addr.port().clone();
             // Spawn a tokio task to serve multiple connections concurrently
             tokio::task::spawn(async move {
                 if let Err(err) = http1::Builder::new()
                     .serve_connection(
                         io,
-                        service_fn(move |req| Self::handler(req, connection_count.clone())),
+                        service_fn(move |req| Self::handler(req, connection_count.clone(), port)),
                     )
                     .await
                 {
@@ -64,9 +64,11 @@ impl Worker {
     async fn handler(
         req: Request<Incoming>,
         connection_count: Arc<RwLock<usize>>,
+        port: u16,
     ) -> Result<Response<BoxBody<Bytes, Infallible>>, Box<dyn Error + Send + Sync>> {
         *connection_count.write().await += 1;
         // tokio::time::sleep(Duration::from_millis(5)).await;
+        println!("Worker {} request", port);
         let result = match req.uri().path() {
             "/health" => {
                 // println!("Health check worker {:?}", worker_name);
