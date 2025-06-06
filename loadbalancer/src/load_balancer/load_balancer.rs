@@ -1,13 +1,16 @@
-use hyper::body::Incoming;
-use hyper::{Request, Response, Uri};
-use hyper_util::client::legacy::Client;
+use http_body_util::{BodyExt, Empty};
+use hyper::body::Buf;
+use hyper::body::{Bytes, Incoming};
+use hyper::{Method, Request, Response, Uri};
 use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::rt::{TokioExecutor, TokioTimer};
+use hyper_util::rt::TokioIo;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::error::Error;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
@@ -17,14 +20,22 @@ enum LoadBalanceStrategy {
     RoundRobin,
     LeastConnection,
 }
+#[derive(Deserialize)]
+enum WorkerStatus {
+    UP,
+    DOWN,
+}
 pub struct LoadBalancer {
     worker_hosts: Vec<String>,
-    worker_connection_count: Arc<RwLock<HashMap<String, isize>>>,
-    client: Client<HttpConnector, Incoming>,
+    worker_connection_count: Arc<RwLock<HashMap<String, usize>>>,
     current_worker: usize,
     current_lb_strategy: LoadBalanceStrategy,
 }
-
+#[derive(Deserialize)]
+struct HealthResponseBody {
+    status: WorkerStatus,
+    connection_count: usize,
+}
 impl LoadBalancer {
     pub fn new(worker_hosts: Vec<String>) -> Result<Self> {
         if worker_hosts.is_empty() {
@@ -35,27 +46,21 @@ impl LoadBalancer {
         connector.set_nodelay(true);
         connector.set_keepalive(Some(Duration::from_secs(5)));
         connector.enforce_http(false);
-        let client = Client::builder(TokioExecutor::new())
-            .pool_timer(TokioTimer::new())
-            .pool_idle_timeout(Duration::from_secs(30))
-            .pool_max_idle_per_host(10)
-            .build(connector);
 
         let worker_connection_count = worker_hosts.iter().map(|host| (host.clone(), 0)).collect();
 
         Ok(Self {
             worker_hosts,
             current_worker: 0,
-            client,
             current_lb_strategy: LoadBalanceStrategy::RoundRobin,
             worker_connection_count: Arc::new(RwLock::new(worker_connection_count)),
         })
     }
-
+    fn get_uri(&self, host: &str) -> String {
+        format!("http://{}", host)
+    }
     pub async fn forward_request(&mut self, req: Request<Incoming>) -> Result<Response<Incoming>> {
         let worker_addr = self.get_next_worker().await.to_string();
-
-        self.update_connection_count(&worker_addr, 1).await;
 
         let mut worker_uri = worker_addr.clone();
         // Extract the path and query from the original request
@@ -66,9 +71,17 @@ impl LoadBalancer {
         // Create a new URI from the worker URI
         let new_uri = Uri::from_str(worker_uri.as_str()).unwrap();
 
+        let stream = TcpStream::connect(worker_addr).await?;
+        let io = TokioIo::new(stream);
+
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
+        tokio::task::spawn(async move {
+            if let Err(err) = conn.await {
+                println!("Connection failed: {:?}", err);
+            }
+        });
         // Extract the headers from the original request
         let headers = req.headers().clone();
-
         // Clone the original request's headers and method
         let mut new_req = Request::builder()
             .method(req.method())
@@ -80,16 +93,10 @@ impl LoadBalancer {
             new_req.headers_mut().insert(key, value.clone());
         }
 
-        // self.update_connection_count(&worker_addr, 1).await;
-        // println!("{:?}", self.worker_connection_count.read().await);
-
-        let response = self
-            .client
-            .request(new_req)
+        let response = sender
+            .send_request(new_req)
             .await
             .map_err(|e| -> Box<dyn Error + Send + Sync> { Box::new(e) })?;
-
-        self.update_connection_count(&worker_addr, -1).await;
 
         Ok(response)
     }
@@ -105,17 +112,6 @@ impl LoadBalancer {
             }
         }
         println!("Switched to {:?}", self.current_lb_strategy);
-    }
-
-    async fn update_connection_count(&mut self, worker_uri: &str, count: isize) {
-        if let Some(curr_count) = self
-            .worker_connection_count
-            .write()
-            .await
-            .get_mut(worker_uri)
-        {
-            *curr_count += count;
-        }
     }
 
     async fn get_next_worker(&mut self) -> String {
@@ -134,5 +130,46 @@ impl LoadBalancer {
                 .map(|(host, _)| host.clone())
                 .unwrap_or_else(|| self.worker_hosts[0].clone()),
         }
+    }
+
+    async fn fetch_worker_status(&self, uri: &str) -> Result<HealthResponseBody> {
+        let stream = TcpStream::connect(uri).await?;
+        let io = TokioIo::new(stream);
+
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
+        tokio::task::spawn(async move {
+            if let Err(err) = conn.await {
+                println!("Connection failed: {:?}", err);
+            }
+        });
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/health")
+            .body(Empty::<Bytes>::new())?;
+        let response = sender.send_request(request).await?;
+        if !response.status().is_success() {
+            return Err("Failed to fetch worker status".into());
+        }
+        let body = response.collect().await?.aggregate();
+        let health_response = serde_json::from_reader(body.reader())?;
+
+        Ok(health_response)
+    }
+
+    pub async fn update_worker_connection_count(&mut self) -> Result<()> {
+        println!("Updating worker connection count");
+        for host in &self.worker_hosts {
+            if let Ok(status) = self.fetch_worker_status(host).await {
+                self.worker_connection_count
+                    .write()
+                    .await
+                    .insert(host.clone(), status.connection_count);
+            }
+        }
+        println!(
+            "Updated worker connection count:\n{:?}",
+            self.worker_connection_count.read().await
+        );
+        Ok(())
     }
 }

@@ -91,6 +91,15 @@ impl Application {
         }
     }
 
+    pub async fn run_health_check(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        self.load_balancer
+            .write()
+            .await
+            .update_worker_connection_count()
+            .await?;
+        Ok(())
+    }
+
     async fn handle(
         req: Request<Incoming>,
         load_balancer: Arc<RwLock<LoadBalancer>>,
@@ -142,6 +151,6 @@ mod tests {
     fn worker_config_should_loaded() {
         let setting = Application::load_config().unwrap();
 
-        assert_eq!(setting.workers.is_empty(), false);
+        assert!(!setting.workers.is_empty());
     }
 }

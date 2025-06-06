@@ -2,7 +2,6 @@ use crate::worker::Worker;
 use config::Config;
 use futures::future::join_all;
 use serde::Deserialize;
-use std::error::Error;
 use std::sync::Arc;
 use thiserror::Error;
 
