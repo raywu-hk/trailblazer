@@ -7,6 +7,7 @@ edition = "2024"
 [dependencies]
 hyper = { version = "1", features = ["http1"] }
 tokio = { version = "1", features = ["full"] }
+tower = "0.5"
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["full"] }
 config = "0.15"

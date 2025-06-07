@@ -1,5 +1,9 @@
 mod constants;
 mod load_balancer;
+mod matrics;
+mod strategy_controller;
+
+use crate::matrics::LoadBalancerMetrics;
 use config::Config;
 pub use constants::*;
 use http_body_util::{BodyExt, Empty, combinators::BoxBody};
@@ -17,6 +21,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
+use tower::ServiceBuilder;
 
 #[derive(Error, Debug)]
 pub enum ApplicationError {
@@ -76,16 +81,16 @@ impl Application {
             // Spawn a tokio task to serve multiple connections concurrently
             let load_balancer = self.load_balancer.clone();
             tokio::task::spawn(async move {
-                // Finally, we bind the incoming connection to our `hello` service
+                let service = service_fn(|req| Self::handle(req, load_balancer.clone()));
+                let service = ServiceBuilder::new()
+                    .layer_fn(LoadBalancerMetrics::new)
+                    .service(service);
                 if let Err(err) = http1::Builder::new()
                     // `service_fn` converts our function in a `Service`
-                    .serve_connection(
-                        io,
-                        service_fn(|req| Self::handle(req, load_balancer.clone())),
-                    )
+                    .serve_connection(io, service)
                     .await
                 {
-                    eprintln!("Error serving connection: {:?}", err);
+                    eprintln!("LB Error serving connection: {:?}", err);
                 }
             });
         }

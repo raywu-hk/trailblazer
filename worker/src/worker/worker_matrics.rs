@@ -36,4 +36,17 @@ where
         req.extensions_mut().insert(self.connection_count.clone());
         self.inner.call(req)
     }
+    /*
+    fn call(&self, req: Request<Incoming>) -> Self::Future {
+        let mut req = req;
+        req.extensions_mut().insert(self.connection.clone());
+
+
+        let future = self.inner.call(req);
+        Box::pin(async move {
+            let response = future.await;
+            response
+        })
+    }
+    */
 }

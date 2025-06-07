@@ -28,6 +28,12 @@ struct Settings {
 pub struct Application {
     pub workers: Vec<Arc<Worker>>,
 }
+impl Default for Application {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Application {
     pub fn new() -> Application {
         let settings = Self::load_config().expect("Config file error");
