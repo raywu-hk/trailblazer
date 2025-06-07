@@ -1,19 +1,21 @@
 mod constants;
+mod lb_config;
 mod load_balancer;
 mod matrics;
 mod strategy_controller;
 
-use crate::matrics::LoadBalancerMetrics;
-use config::Config;
+use crate::lb_config::LoadBalancerConfig;
+use crate::matrics::LoadBalancerMetricsLayer;
+use crate::strategy_controller::StrategyController;
+use config::{Config, ConfigError};
 pub use constants::*;
-use http_body_util::{BodyExt, Empty, combinators::BoxBody};
+use http_body_util::{BodyExt, combinators::BoxBody};
 use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 pub use load_balancer::*;
-use serde::Deserialize;
 use std::error::Error;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -29,17 +31,14 @@ pub enum ApplicationError {
     ConfigFileNotFound(String),
     #[error("Env var {0} not found")]
     EnvConfigNotFound(String),
-    #[error("Config Invalid")]
-    ConfigInvalid,
+    #[error("Config Invalid: {0}")]
+    ConfigInvalid(ConfigError),
     #[error("Port{0} is not available")]
     PortCanNotBind(u16),
     #[error("Server Error")]
     ServerError,
-}
-
-#[derive(Debug, Deserialize)]
-struct Settings {
-    workers: Vec<String>,
+    #[error("Health check error")]
+    HealthCheckError,
 }
 
 pub struct Application {
@@ -55,7 +54,7 @@ impl Application {
         }
 
         let load_balancer = Arc::new(RwLock::new(
-            LoadBalancer::new(worker_hosts).expect("failed to create load balancer"),
+            LoadBalancer::new(&settings).expect("failed to create load balancer"),
         ));
 
         let addr = SocketAddr::from_str(address).unwrap();
@@ -79,15 +78,27 @@ impl Application {
             let io = TokioIo::new(stream);
 
             // Spawn a tokio task to serve multiple connections concurrently
+            let current_lb_strategy = self.load_balancer.read().await.current_lb_strategy.clone();
             let load_balancer = self.load_balancer.clone();
             tokio::task::spawn(async move {
                 let service = service_fn(|req| Self::handle(req, load_balancer.clone()));
-                let service = ServiceBuilder::new()
-                    .layer_fn(LoadBalancerMetrics::new)
+                let matrics_lb_layer = load_balancer.read().await.matrics.clone();
+                let matrics_strategy_layer = load_balancer.read().await.matrics.clone();
+                let layered_service = ServiceBuilder::new()
+                    .layer_fn(move |service| {
+                        LoadBalancerMetricsLayer::new(service, matrics_lb_layer.clone())
+                    })
+                    .layer_fn(move |service| {
+                        StrategyController::new(
+                            service,
+                            current_lb_strategy.clone(),
+                            matrics_strategy_layer.clone(),
+                        )
+                    })
                     .service(service);
                 if let Err(err) = http1::Builder::new()
                     // `service_fn` converts our function in a `Service`
-                    .serve_connection(io, service)
+                    .serve_connection(io, layered_service)
                     .await
                 {
                     eprintln!("LB Error serving connection: {:?}", err);
@@ -101,7 +112,8 @@ impl Application {
             .write()
             .await
             .update_worker_connection_count()
-            .await?;
+            .await
+            .map_err(|_| ApplicationError::HealthCheckError)?;
         Ok(())
     }
 
@@ -109,35 +121,16 @@ impl Application {
         req: Request<Incoming>,
         load_balancer: Arc<RwLock<LoadBalancer>>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, ApplicationError> {
-        match req.uri().path() {
-            "/switch" => {
-                load_balancer
-                    .write()
-                    .await
-                    .switch_current_lb_strategy()
-                    .await;
-                Ok(Response::builder()
-                    .status(StatusCode::OK)
-                    .body(
-                        Empty::<Bytes>::new()
-                            .map_err(|never| match never {})
-                            .boxed(),
-                    )
-                    .map_err(|_| ApplicationError::ServerError)?)
-            }
-            _ => {
-                let res = load_balancer
-                    .write()
-                    .await
-                    .forward_request(req)
-                    .await
-                    .map_err(|_| ApplicationError::ServerError)?;
-                Ok(res.map(|body| body.boxed()))
-            }
-        }
+        let res = load_balancer
+            .write()
+            .await
+            .forward_request(req)
+            .await
+            .map_err(|_| ApplicationError::ServerError)?;
+        Ok(res.map(|body| body.boxed()))
     }
 
-    fn load_config() -> Result<Settings, ApplicationError> {
+    fn load_config() -> Result<LoadBalancerConfig, ApplicationError> {
         let config = Config::builder()
             .add_source(config::File::with_name(&CONFIG_FILE_PATH))
             .build()
@@ -145,7 +138,7 @@ impl Application {
 
         config
             .try_deserialize()
-            .map_err(|_| ApplicationError::ConfigInvalid)
+            .map_err(|e| ApplicationError::ConfigInvalid(e))
     }
 }
 

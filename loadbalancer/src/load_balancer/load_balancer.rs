@@ -1,3 +1,5 @@
+use crate::lb_config::LoadBalancerConfig;
+use crate::matrics::Metrics;
 use http_body_util::{BodyExt, Empty};
 use hyper::body::Buf;
 use hyper::body::{Bytes, Incoming};
@@ -6,16 +8,32 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioIo;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::error::Error;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 
-type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
+#[derive(Error, Debug)]
+pub enum LoadBalancerError {
+    #[error("Configuration error")]
+    ConfigError,
+    #[error("Network error: {0}")]
+    HyperError(#[from] hyper::Error),
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("Unexpected Error")]
+    UnexpectedError,
+    #[error("Worker error: {0}")]
+    WorkerError(String),
+    #[error("Strategy error: {0}")]
+    StrategyError(String),
+}
 
-#[derive(Debug)]
+type Result<T> = std::result::Result<T, LoadBalancerError>;
+
+#[derive(Debug, Deserialize, Clone)]
 pub enum LoadBalanceStrategy {
     RoundRobin,
     LeastConnection,
@@ -29,7 +47,8 @@ pub struct LoadBalancer {
     worker_hosts: Vec<String>,
     worker_connection_count: Arc<RwLock<HashMap<String, usize>>>,
     current_worker: usize,
-    current_lb_strategy: LoadBalanceStrategy,
+    pub current_lb_strategy: Arc<RwLock<LoadBalanceStrategy>>,
+    pub matrics: Arc<Metrics>,
 }
 #[derive(Deserialize)]
 struct HealthResponseBody {
@@ -37,24 +56,28 @@ struct HealthResponseBody {
     connection_count: usize,
 }
 impl LoadBalancer {
-    pub fn new(worker_hosts: Vec<String>) -> Result<Self> {
-        if worker_hosts.is_empty() {
-            return Err("No worker hosts provided".into());
+    pub fn new(config: &LoadBalancerConfig) -> Result<Self> {
+        if config.workers.is_empty() {
+            return Err(LoadBalancerError::ConfigError);
         }
-        // let worker_health = worker_hosts.iter().map(|host| (host.clone(), 0)).collect();
         let mut connector = HttpConnector::new();
         connector.set_nodelay(true);
         connector.set_keepalive(Some(Duration::from_secs(5)));
         connector.enforce_http(false);
 
         let worker_connection_count = Arc::new(RwLock::new(
-            worker_hosts.iter().map(|host| (host.clone(), 0)).collect(),
+            config
+                .workers
+                .iter()
+                .map(|host| (host.clone(), 0))
+                .collect(),
         ));
         Ok(Self {
-            worker_hosts,
+            worker_hosts: config.workers.clone(),
             current_worker: 0,
-            current_lb_strategy: LoadBalanceStrategy::RoundRobin,
+            current_lb_strategy: Arc::new(RwLock::new(config.strategy.default_strategy.clone())),
             worker_connection_count,
+            matrics: Arc::new(Metrics::default()),
         })
     }
     pub async fn forward_request(&mut self, req: Request<Incoming>) -> Result<Response<Incoming>> {
@@ -69,7 +92,9 @@ impl LoadBalancer {
         // Create a new URI from the worker URI
         let new_uri = Uri::from_str(worker_uri.as_str()).unwrap();
 
-        let stream = TcpStream::connect(worker_addr).await?;
+        let stream = TcpStream::connect(worker_addr)
+            .await
+            .map_err(|h| LoadBalancerError::IoError(h))?;
         let io = TokioIo::new(stream);
 
         let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
@@ -84,7 +109,8 @@ impl LoadBalancer {
         let mut new_req = Request::builder()
             .method(req.method())
             .uri(new_uri)
-            .body(req.into_body())?;
+            .body(req.into_body())
+            .map_err(|_| LoadBalancerError::UnexpectedError)?;
 
         // Copy headers from the original request
         for (key, value) in headers.iter() {
@@ -94,18 +120,18 @@ impl LoadBalancer {
         let response = sender
             .send_request(new_req)
             .await
-            .map_err(|e| -> Box<dyn Error + Send + Sync> { Box::new(e) })?;
-        Ok(response)
+            .map_err(|e| LoadBalancerError::HyperError(e));
+        response
     }
 
     pub async fn switch_current_lb_strategy(&mut self) {
         println!("Switching current lb");
-        match self.current_lb_strategy {
+        match *self.current_lb_strategy.read().await {
             LoadBalanceStrategy::RoundRobin => {
-                self.current_lb_strategy = LoadBalanceStrategy::LeastConnection
+                *self.current_lb_strategy.write().await = LoadBalanceStrategy::LeastConnection
             }
             LoadBalanceStrategy::LeastConnection => {
-                self.current_lb_strategy = LoadBalanceStrategy::RoundRobin
+                *self.current_lb_strategy.write().await = LoadBalanceStrategy::RoundRobin
             }
         }
         println!("Switched to {:?}", self.current_lb_strategy);
@@ -141,19 +167,25 @@ impl LoadBalancer {
         let request = Request::builder()
             .method(Method::GET)
             .uri("/health")
-            .body(Empty::<Bytes>::new())?;
+            .body(Empty::<Bytes>::new())
+            .map_err(|_| LoadBalancerError::UnexpectedError)?;
+
         let response = sender.send_request(request).await?;
+
         if !response.status().is_success() {
-            return Err("Failed to fetch worker status".into());
+            return Err(LoadBalancerError::WorkerError(
+                "Worker returned non-200 status code".to_string(),
+            ));
         }
         let body = response.collect().await?.aggregate();
-        let health_response = serde_json::from_reader(body.reader())?;
+        let health_response = serde_json::from_reader(body.reader())
+            .map_err(|_| LoadBalancerError::UnexpectedError)?;
 
         Ok(health_response)
     }
 
     async fn get_next_worker(&mut self) -> String {
-        match self.current_lb_strategy {
+        match *self.current_lb_strategy.read().await {
             LoadBalanceStrategy::RoundRobin => {
                 let worker_idx = (self.current_worker + 1) % self.worker_hosts.len();
                 self.current_worker = worker_idx;

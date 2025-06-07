@@ -5,3 +5,12 @@ workers = [
     "0.0.0.0:3003",
     "0.0.0.0:3004",
 ]
+
+[server_config]
+address = "127.0.0.1:8080"
+health_check_interval = 6000
+
+[strategy]
+default_strategy = "RoundRobin"
+response_time_threshold = 500
+switch_interval = 6000
