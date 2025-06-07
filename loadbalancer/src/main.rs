@@ -1,12 +1,12 @@
+use color_eyre::Result;
 use loadbalancer::Application;
 use loadbalancer::prod::APP_ADDRESS;
-use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+async fn main() -> Result<()> {
     let app = Arc::new(
         Application::new(APP_ADDRESS)
             .await

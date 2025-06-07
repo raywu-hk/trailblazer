@@ -1,5 +1,7 @@
 use crate::lb_config::LoadBalancerConfig;
 use crate::matrics::Metrics;
+use color_eyre::Result;
+use color_eyre::eyre::Context;
 use http_body_util::{BodyExt, Empty};
 use hyper::body::Buf;
 use hyper::body::{Bytes, Incoming};
@@ -14,7 +16,6 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
-
 #[derive(Error, Debug)]
 pub enum LoadBalancerError {
     #[error("Configuration error")]
@@ -30,8 +31,6 @@ pub enum LoadBalancerError {
     #[error("Strategy error: {0}")]
     StrategyError(String),
 }
-
-type Result<T> = std::result::Result<T, LoadBalancerError>;
 
 #[derive(Debug, Deserialize, Clone)]
 pub enum LoadBalanceStrategy {
@@ -58,7 +57,7 @@ struct HealthResponseBody {
 impl LoadBalancer {
     pub fn new(config: &LoadBalancerConfig) -> Result<Self> {
         if config.workers.is_empty() {
-            return Err(LoadBalancerError::ConfigError);
+            return Err(LoadBalancerError::ConfigError.into());
         }
         let mut connector = HttpConnector::new();
         connector.set_nodelay(true);
@@ -90,11 +89,11 @@ impl LoadBalancer {
         }
         worker_uri = format!("http://{}", worker_uri);
         // Create a new URI from the worker URI
-        let new_uri = Uri::from_str(worker_uri.as_str()).unwrap();
+        let new_uri = Uri::from_str(worker_uri.as_str())?;
 
         let stream = TcpStream::connect(worker_addr)
             .await
-            .map_err(|h| LoadBalancerError::IoError(h))?;
+            .map_err(LoadBalancerError::IoError)?;
         let io = TokioIo::new(stream);
 
         let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
@@ -117,11 +116,10 @@ impl LoadBalancer {
             new_req.headers_mut().insert(key, value.clone());
         }
 
-        let response = sender
+        sender
             .send_request(new_req)
             .await
-            .map_err(|e| LoadBalancerError::HyperError(e));
-        response
+            .wrap_err("No response from worker")
     }
 
     pub async fn switch_current_lb_strategy(&mut self) {
@@ -174,8 +172,9 @@ impl LoadBalancer {
 
         if !response.status().is_success() {
             return Err(LoadBalancerError::WorkerError(
-                "Worker returned non-200 status code".to_string(),
-            ));
+                "Worker returned non-200 status code".to_owned(),
+            )
+            .into());
         }
         let body = response.collect().await?.aggregate();
         let health_response = serde_json::from_reader(body.reader())

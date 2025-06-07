@@ -7,6 +7,7 @@ mod strategy_controller;
 use crate::lb_config::LoadBalancerConfig;
 use crate::matrics::LoadBalancerMetricsLayer;
 use crate::strategy_controller::StrategyController;
+use color_eyre::Result;
 use config::{Config, ConfigError};
 pub use constants::*;
 use http_body_util::{BodyExt, combinators::BoxBody};
@@ -16,7 +17,6 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 pub use load_balancer::*;
-use std::error::Error;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -46,7 +46,7 @@ pub struct Application {
     load_balancer: Arc<RwLock<LoadBalancer>>,
 }
 impl Application {
-    pub async fn new(address: &str) -> Result<Self, ApplicationError> {
+    pub async fn new(address: &str) -> Result<Self> {
         let settings = Self::load_config()?;
         let mut worker_hosts = Vec::with_capacity(settings.workers.len());
         for address in &settings.workers {
@@ -57,7 +57,7 @@ impl Application {
             LoadBalancer::new(&settings).expect("failed to create load balancer"),
         ));
 
-        let addr = SocketAddr::from_str(address).unwrap();
+        let addr = SocketAddr::from_str(address)?;
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|_| ApplicationError::PortCanNotBind(addr.port()))?;
@@ -68,7 +68,7 @@ impl Application {
         };
         Ok(app)
     }
-    pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn run(&self) -> Result<()> {
         // We start a loop to continuously accept incoming connections
         loop {
             let (stream, _) = self.listener.accept().await?;
@@ -107,7 +107,7 @@ impl Application {
         }
     }
 
-    pub async fn run_health_check(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn run_health_check(&self) -> Result<()> {
         self.load_balancer
             .write()
             .await
@@ -130,7 +130,7 @@ impl Application {
         Ok(res.map(|body| body.boxed()))
     }
 
-    fn load_config() -> Result<LoadBalancerConfig, ApplicationError> {
+    fn load_config() -> Result<LoadBalancerConfig> {
         let config = Config::builder()
             .add_source(config::File::with_name(&CONFIG_FILE_PATH))
             .build()
@@ -138,7 +138,7 @@ impl Application {
 
         config
             .try_deserialize()
-            .map_err(|e| ApplicationError::ConfigInvalid(e))
+            .map_err(|e| ApplicationError::ConfigInvalid(e).into())
     }
 }
 
