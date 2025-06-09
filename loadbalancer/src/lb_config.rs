@@ -6,7 +6,7 @@ use std::time::Duration;
 pub struct LoadBalancerConfig {
     pub server_config: ServerConfig,
     pub workers: Vec<String>,
-    pub strategy: StrategyConfig,
+    pub strategy_config: StrategyConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]

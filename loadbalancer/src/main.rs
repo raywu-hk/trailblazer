@@ -2,7 +2,6 @@ use color_eyre::Result;
 use loadbalancer::Application;
 use loadbalancer::prod::APP_ADDRESS;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::time::interval;
 
 #[tokio::main]
@@ -12,10 +11,17 @@ async fn main() -> Result<()> {
             .await
             .expect("failed to create app"),
     );
-
+    let mut interval = interval(
+        app.load_balancer
+            .read()
+            .await
+            .config
+            .strategy_config
+            .switch_interval,
+    );
     let app_clone = app.clone();
+    // We start a loop to continuously accept incoming connections
     tokio::spawn(async move {
-        let mut interval = interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
             if let Err(e) = app_clone.run_health_check().await {

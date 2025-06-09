@@ -16,7 +16,7 @@ pub enum ApplicationError {
     EnvConfigNotFound(String),
     #[error("Config Invalid")]
     ConfigInvalid,
-    #[error("Port{0} is not available")]
+    #[error("Port {0} is not available")]
     PortCanNotBind(u16),
     #[error("Server Error")]
     ServerError,

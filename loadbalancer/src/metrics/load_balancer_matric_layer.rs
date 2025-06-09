@@ -1,4 +1,4 @@
-use crate::matrics::matrics::Metrics;
+use crate::metrics::metrics::Metrics;
 use hyper::body::{Body, Incoming};
 use hyper::service::Service;
 use hyper::{Request, Response};

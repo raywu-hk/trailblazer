@@ -1,3 +1,2 @@
-mod strategy_controller;
-
-pub use strategy_controller::*;
+mod strategy_manager;
+pub use strategy_manager::*;

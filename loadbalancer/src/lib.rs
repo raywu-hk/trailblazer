@@ -1,12 +1,12 @@
 mod constants;
 mod lb_config;
 mod load_balancer;
-mod matrics;
+mod metrics;
 mod strategy_controller;
 
 use crate::lb_config::LoadBalancerConfig;
-use crate::matrics::LoadBalancerMetricsLayer;
-use crate::strategy_controller::StrategyController;
+use crate::metrics::{LoadBalancerMetricsLayer, Metrics};
+use crate::strategy_controller::StrategyManager;
 use color_eyre::Result;
 use config::{Config, ConfigError};
 pub use constants::*;
@@ -33,7 +33,7 @@ pub enum ApplicationError {
     EnvConfigNotFound(String),
     #[error("Config Invalid: {0}")]
     ConfigInvalid(ConfigError),
-    #[error("Port{0} is not available")]
+    #[error("Port {0} is not available")]
     PortCanNotBind(u16),
     #[error("Server Error")]
     ServerError,
@@ -43,7 +43,7 @@ pub enum ApplicationError {
 
 pub struct Application {
     pub listener: TcpListener,
-    load_balancer: Arc<RwLock<LoadBalancer>>,
+    pub load_balancer: Arc<RwLock<LoadBalancer>>,
 }
 impl Application {
     pub async fn new(address: &str) -> Result<Self> {
@@ -52,9 +52,14 @@ impl Application {
         for address in &settings.workers {
             worker_hosts.push(address.to_string());
         }
-
+        let metrics = Arc::new(Metrics::default());
+        let strategy_manager = Arc::new(StrategyManager::new(
+            Arc::new(settings.strategy_config.clone()),
+            metrics.clone(),
+        ));
         let load_balancer = Arc::new(RwLock::new(
-            LoadBalancer::new(&settings).expect("failed to create load balancer"),
+            LoadBalancer::new(settings, strategy_manager, metrics.clone())
+                .expect("failed to create load balancer"),
         ));
 
         let addr = SocketAddr::from_str(address)?;
@@ -69,7 +74,6 @@ impl Application {
         Ok(app)
     }
     pub async fn run(&self) -> Result<()> {
-        // We start a loop to continuously accept incoming connections
         loop {
             let (stream, _) = self.listener.accept().await?;
 
@@ -78,22 +82,13 @@ impl Application {
             let io = TokioIo::new(stream);
 
             // Spawn a tokio task to serve multiple connections concurrently
-            let current_lb_strategy = self.load_balancer.read().await.current_lb_strategy.clone();
             let load_balancer = self.load_balancer.clone();
             tokio::task::spawn(async move {
                 let service = service_fn(|req| Self::handle(req, load_balancer.clone()));
-                let matrics_lb_layer = load_balancer.read().await.matrics.clone();
-                let matrics_strategy_layer = load_balancer.read().await.matrics.clone();
+                let matrics_lb_layer = load_balancer.read().await.metrics.clone();
                 let layered_service = ServiceBuilder::new()
                     .layer_fn(move |service| {
                         LoadBalancerMetricsLayer::new(service, matrics_lb_layer.clone())
-                    })
-                    .layer_fn(move |service| {
-                        StrategyController::new(
-                            service,
-                            current_lb_strategy.clone(),
-                            matrics_strategy_layer.clone(),
-                        )
                     })
                     .service(service);
                 if let Err(err) = http1::Builder::new()

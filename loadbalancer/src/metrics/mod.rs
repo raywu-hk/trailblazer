@@ -1,5 +1,5 @@
 mod load_balancer_matric_layer;
-mod matrics;
+mod metrics;
 
 pub use load_balancer_matric_layer::*;
-pub use matrics::*;
+pub use metrics::*;

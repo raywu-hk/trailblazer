@@ -1,4 +1,4 @@
-use crate::worker::WorkerMatrics;
+use crate::worker::{Metrics, WorkerMetrics};
 use http_body_util::combinators::BoxBody;
 use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
@@ -10,31 +10,25 @@ use std::error::Error;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 
 #[derive(Serialize)]
-enum WorkerStatus {
-    UP,
-    DOWN,
-}
-#[derive(Serialize)]
 struct HealthResponseBody {
-    status: WorkerStatus,
     connection_count: usize,
+    avg_response_time: u64,
 }
 
 #[derive(Clone)]
 pub struct Worker {
     pub socket_addr: SocketAddr,
-    connection_count: Arc<AtomicUsize>,
+    metrics: Arc<Metrics>,
 }
 impl Worker {
     pub fn new(address: &str) -> Self {
         Self {
             socket_addr: SocketAddr::from_str(address).expect("Worker ip address invalid"),
-            connection_count: Arc::new(AtomicUsize::new(0)),
+            metrics: Arc::new(Metrics::default()),
         }
     }
     pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -47,20 +41,20 @@ impl Worker {
             // `hyper::rt` IO traits.
             let io = TokioIo::new(stream);
             let port = self.socket_addr.port();
-            let connection_count = self.connection_count.clone();
-            connection_count.fetch_add(1, Ordering::Relaxed);
+            self.metrics.record_connection();
+            let metrics_for_avg_response_time = self.metrics.clone();
+            let metrics_for_connection_count = self.metrics.clone();
             // Spawn a tokio task to serve multiple connections concurrently
             tokio::task::spawn(async move {
                 let svc = hyper::service::service_fn(move |req| Self::handler(req, port));
-                let connection_count_for_metrics = connection_count.clone();
                 let svc = ServiceBuilder::new()
                     .layer_fn(move |service| {
-                        WorkerMatrics::new(service, connection_count_for_metrics.clone())
+                        WorkerMetrics::new(service, metrics_for_avg_response_time.clone())
                     })
                     .service(svc);
                 let result = http1::Builder::new().serve_connection(io, svc).await;
 
-                connection_count.fetch_sub(1, Ordering::Relaxed);
+                metrics_for_connection_count.release_connection();
 
                 if let Err(err) = result {
                     eprintln!("Error serving connection: {:?}", err);
@@ -82,19 +76,19 @@ impl Worker {
         // println!("Worker {} request", port);
         match req.uri().path() {
             "/health" => {
-                let connection_count = req
-                    .extensions()
-                    .get::<Arc<AtomicUsize>>()
-                    .map(|counter| counter.load(Ordering::Relaxed))
-                    .unwrap_or(0);
+                let metrics = req.extensions().get::<Arc<Metrics>>();
 
-                println!("Health check worker {:?}, con:{}", port, connection_count);
-                let res_body = HealthResponseBody {
-                    status: WorkerStatus::UP,
-                    connection_count,
+                let json_body = match metrics {
+                    Some(metrics) => {
+                        println!("Health check worker {:?}, metrics:{:?}", port, metrics);
+                        let res_body = HealthResponseBody {
+                            connection_count: metrics.get_connection_count() as usize,
+                            avg_response_time: metrics.get_avg_response_time(),
+                        };
+                        serde_json::to_string(&res_body)?
+                    }
+                    None => "".to_owned(),
                 };
-
-                let json_body = serde_json::to_string(&res_body)?;
 
                 let res = Response::builder()
                     .status(StatusCode::OK)
