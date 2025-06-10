@@ -1,5 +1,5 @@
 use crate::metrics::metrics::Metrics;
-use hyper::body::{Body, Incoming};
+use hyper::body::Body;
 use hyper::service::Service;
 use hyper::{Request, Response};
 use std::future::Future;
@@ -18,18 +18,19 @@ impl<S> LoadBalancerMetricsLayer<S> {
         Self { inner, matrics }
     }
 }
-impl<S, B> Service<Request<Incoming>> for LoadBalancerMetricsLayer<S>
+impl<S, B, ReqBody> Service<Request<ReqBody>> for LoadBalancerMetricsLayer<S>
 where
-    S: Service<Request<Incoming>, Response = Response<B>> + Send + Sync,
+    S: Service<Request<ReqBody>, Response = Response<B>> + Send + Sync,
     S::Future: Send + 'static,
     S::Error: Send,
     B: Body + Send,
+    ReqBody: Send,
 {
     type Response = Response<B>;
     type Error = S::Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
-    fn call(&self, req: Request<Incoming>) -> Self::Future {
+    fn call(&self, req: Request<ReqBody>) -> Self::Future {
         let start_time = Instant::now();
         let future = self.inner.call(req);
         let matrics = self.matrics.clone();

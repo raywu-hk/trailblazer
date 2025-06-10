@@ -16,8 +16,8 @@ async fn main() -> Result<()> {
             .read()
             .await
             .config
-            .strategy_config
-            .switch_interval,
+            .server_config
+            .health_check_interval,
     );
     let app_clone = app.clone();
     // We start a loop to continuously accept incoming connections
