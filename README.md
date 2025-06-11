@@ -1,11 +1,11 @@
 # Trailblazer
 
-A high-performance distributed load balancing system built with Rust
+A high-performance distributed load balancing system built with Rust.  
 It is an experimental project to learn Rust.
 
 ## Overview
 
-Trailblazer is a robust, asynchronous load balancing solution designed for high-throughput applications.
+Trailblazer is a robust, asynchronous load balancing solution designed for high-throughput applications.  
 The project consists of two main parts:
 
 - **Load Balancer**: Distributes incoming requests across multiple worker instances
