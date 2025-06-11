@@ -6,14 +6,21 @@ It is an experimental project to learn Rust.
 ## Overview
 
 Trailblazer is a robust, asynchronous load balancing solution designed for high-throughput applications.  
+Trailblazer can adapt load balancing strategies
+- round-robin distribution 
+- routing based on real-time metrics e.g., average response time.  
+
 The project consists of two main parts:
 
 - **Load Balancer**: Distributes incoming requests across multiple worker instances
 - **Worker**: Handles the actual processing of requests
 ![LoadBalancer.webp](images/LoadBalancer.webp)
+
 ## Features
 
 - **High Performance**: Built with Rust for maximum performance and memory safety
+- **Adaptive Load Balancing**: Round-robin and metric-based routing strategies
+- **Real-time Metrics**: Tracks average response time and performance indicators
 - **Asynchronous Processing**: Utilizes Tokio for efficient async operations
 - **HTTP/HTTPS Support**: Full HTTP protocol support with Hyper
 - **Configuration Management**: Flexible configuration system
