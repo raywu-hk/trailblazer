@@ -22,7 +22,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::net::TcpListener;
-use tokio::sync::RwLock;
 use tower::ServiceBuilder;
 
 #[derive(Error, Debug)]
@@ -43,7 +42,7 @@ pub enum ApplicationError {
 
 pub struct Application {
     pub listener: TcpListener,
-    pub load_balancer: Arc<RwLock<LoadBalancer>>,
+    pub load_balancer: Arc<LoadBalancer>,
 }
 impl Application {
     pub async fn new(address: &str) -> Result<Self> {
@@ -57,10 +56,10 @@ impl Application {
             Arc::new(settings.strategy_config.clone()),
             metrics.clone(),
         ));
-        let load_balancer = Arc::new(RwLock::new(
+        let load_balancer = Arc::new(
             LoadBalancer::new(settings, strategy_manager, metrics.clone())
                 .expect("failed to create load balancer"),
-        ));
+        );
 
         let addr = SocketAddr::from_str(address)?;
         let listener = TcpListener::bind(addr)
@@ -85,8 +84,8 @@ impl Application {
             let load_balancer = self.load_balancer.clone();
             tokio::task::spawn(async move {
                 let service = service_fn(|req| Self::handle(req, load_balancer.clone()));
-                let matrics_lb_layer = load_balancer.read().await.metrics.clone();
-                let strategy_manager = load_balancer.read().await.strategy_manager.clone();
+                let matrics_lb_layer = load_balancer.metrics.clone();
+                let strategy_manager = load_balancer.strategy_manager.clone();
                 let layered_service = ServiceBuilder::new()
                     .layer_fn(move |service| {
                         LoadBalancerMetricsLayer::new(service, matrics_lb_layer.clone())
@@ -106,8 +105,6 @@ impl Application {
 
     pub async fn run_health_check(&self) -> Result<()> {
         self.load_balancer
-            .write()
-            .await
             .update_worker_connection_count()
             .await
             .map_err(|_| ApplicationError::HealthCheckError)?;
@@ -116,11 +113,9 @@ impl Application {
 
     async fn handle(
         req: Request<Incoming>,
-        load_balancer: Arc<RwLock<LoadBalancer>>,
+        load_balancer: Arc<LoadBalancer>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, ApplicationError> {
         let res = load_balancer
-            .write()
-            .await
             .forward_request(req)
             .await
             .map_err(|_| ApplicationError::ServerError)?;
@@ -163,7 +158,7 @@ mod tests {
             Ok(app) => {
                 assert!(app.listener.local_addr().is_ok());
                 // Verify load balancer is properly initialized
-                let lb = app.load_balancer.read().await;
+                let lb = app.load_balancer;
                 // Basic verification that load balancer exists
                 drop(lb);
             }
@@ -310,7 +305,7 @@ mod tests {
             assert!(app.listener.local_addr().is_ok());
 
             // Verify load balancer is accessible
-            let lb_guard = app.load_balancer.read().await;
+            let lb_guard = app.load_balancer;
             drop(lb_guard); // Release the lock
 
             println!("Integration test completed successfully");

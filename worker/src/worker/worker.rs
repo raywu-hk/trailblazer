@@ -10,7 +10,6 @@ use std::error::Error;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 
@@ -95,8 +94,8 @@ impl Worker {
                 Ok(res)
             }
             _ => {
-                let delay = fastrand::u64(1..=100);
-                tokio::time::sleep(Duration::from_millis(delay)).await;
+                // let delay = fastrand::u64(1..=10);
+                // tokio::time::sleep(Duration::from_millis(delay)).await;
                 println!("Worker {} default path", port);
                 Ok(Response::builder()
                     .status(StatusCode::OK)

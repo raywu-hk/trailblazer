@@ -11,14 +11,7 @@ async fn main() -> Result<()> {
             .await
             .expect("failed to create app"),
     );
-    let mut interval = interval(
-        app.load_balancer
-            .read()
-            .await
-            .config
-            .server_config
-            .health_check_interval,
-    );
+    let mut interval = interval(app.load_balancer.config.server_config.health_check_interval);
     let app_clone = app.clone();
     // We start a loop to continuously accept incoming connections
     tokio::spawn(async move {

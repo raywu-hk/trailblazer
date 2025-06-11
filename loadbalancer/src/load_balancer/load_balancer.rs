@@ -115,7 +115,7 @@ impl LoadBalancer {
             config,
         })
     }
-    pub async fn forward_request(&mut self, req: Request<Incoming>) -> Result<Response<Incoming>> {
+    pub async fn forward_request(&self, req: Request<Incoming>) -> Result<Response<Incoming>> {
         let worker_addr = self.get_next_worker().await.to_string();
 
         let mut worker_uri = worker_addr.clone();
@@ -146,7 +146,7 @@ impl LoadBalancer {
             .wrap_err("No response from worker")
     }
 
-    pub async fn update_worker_connection_count(&mut self) -> Result<()> {
+    pub async fn update_worker_connection_count(&self) -> Result<()> {
         println!("Updating worker connection count");
         for host in &self.worker_hosts {
             if let Ok(status) = self.fetch_worker_status(host).await {
