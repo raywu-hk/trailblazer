@@ -2,7 +2,6 @@ use crate::worker::Worker;
 use config::Config;
 use futures::future::join_all;
 use serde::Deserialize;
-use std::error::Error;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -17,7 +16,7 @@ pub enum ApplicationError {
     EnvConfigNotFound(String),
     #[error("Config Invalid")]
     ConfigInvalid,
-    #[error("Port{0} is not available")]
+    #[error("Port {0} is not available")]
     PortCanNotBind(u16),
     #[error("Server Error")]
     ServerError,
@@ -29,6 +28,12 @@ struct Settings {
 pub struct Application {
     pub workers: Vec<Arc<Worker>>,
 }
+impl Default for Application {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Application {
     pub fn new() -> Application {
         let settings = Self::load_config().expect("Config file error");

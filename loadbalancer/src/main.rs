@@ -1,11 +1,27 @@
+use color_eyre::Result;
 use loadbalancer::Application;
 use loadbalancer::prod::APP_ADDRESS;
-use std::error::Error;
+use std::sync::Arc;
+use tokio::time::interval;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    let app = Application::new(APP_ADDRESS)
-        .await
-        .expect("failed to create app");
+async fn main() -> Result<()> {
+    let app = Arc::new(
+        Application::new(APP_ADDRESS)
+            .await
+            .expect("failed to create app"),
+    );
+    let mut interval = interval(app.load_balancer.config.server_config.health_check_interval);
+    let app_clone = app.clone();
+    // We start a loop to continuously accept incoming connections
+    tokio::spawn(async move {
+        loop {
+            interval.tick().await;
+            if let Err(e) = app_clone.run_health_check().await {
+                println!("Error running health check: {:?}", e);
+            }
+        }
+    });
+
     app.run().await
 }
