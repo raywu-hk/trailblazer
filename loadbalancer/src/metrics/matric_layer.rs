@@ -18,6 +18,7 @@ impl<S> MetricsLayer<S> {
         Self { inner, matrics }
     }
 }
+
 impl<S, B, ReqBody> Service<Request<ReqBody>> for MetricsLayer<S>
 where
     S: Service<Request<ReqBody>, Response = Response<B>> + Send + Sync,
