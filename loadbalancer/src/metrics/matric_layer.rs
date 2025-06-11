@@ -8,17 +8,17 @@ use std::sync::Arc;
 use tokio::time::Instant;
 
 #[derive(Debug, Clone)]
-pub struct LoadBalancerMetricsLayer<S> {
+pub struct MetricsLayer<S> {
     inner: S,
     pub matrics: Arc<Metrics>,
 }
 
-impl<S> LoadBalancerMetricsLayer<S> {
+impl<S> MetricsLayer<S> {
     pub fn new(inner: S, matrics: Arc<Metrics>) -> Self {
         Self { inner, matrics }
     }
 }
-impl<S, B, ReqBody> Service<Request<ReqBody>> for LoadBalancerMetricsLayer<S>
+impl<S, B, ReqBody> Service<Request<ReqBody>> for MetricsLayer<S>
 where
     S: Service<Request<ReqBody>, Response = Response<B>> + Send + Sync,
     S::Future: Send + 'static,

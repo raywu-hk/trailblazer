@@ -2,11 +2,11 @@ mod constants;
 mod lb_config;
 mod load_balancer;
 mod metrics;
-mod strategy_controller;
+mod strategy;
 
 use crate::lb_config::LoadBalancerConfig;
-use crate::metrics::{LoadBalancerMetricsLayer, Metrics};
-use crate::strategy_controller::{StrategyLayer, StrategyManager};
+use crate::metrics::{Metrics, MetricsLayer};
+use crate::strategy::{StrategyLayer, StrategyManager};
 use color_eyre::Result;
 use config::{Config, ConfigError};
 pub use constants::*;
@@ -87,9 +87,7 @@ impl Application {
                 let matrics_lb_layer = load_balancer.metrics.clone();
                 let strategy_manager = load_balancer.strategy_manager.clone();
                 let layered_service = ServiceBuilder::new()
-                    .layer_fn(move |service| {
-                        LoadBalancerMetricsLayer::new(service, matrics_lb_layer.clone())
-                    })
+                    .layer_fn(move |service| MetricsLayer::new(service, matrics_lb_layer.clone()))
                     .layer_fn(move |service| StrategyLayer::new(service, strategy_manager.clone()))
                     .service(service);
                 if let Err(err) = http1::Builder::new()

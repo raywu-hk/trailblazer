@@ -1,6 +1,6 @@
 use crate::lb_config::LoadBalancerConfig;
 use crate::metrics::Metrics;
-use crate::strategy_controller::StrategyManager;
+use crate::strategy::StrategyManager;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
 use http_body_util::BodyExt;
@@ -209,7 +209,7 @@ mod tests {
     use super::*;
     use crate::lb_config::{LoadBalancerConfig, StrategyConfig};
     use crate::metrics::Metrics;
-    use crate::strategy_controller::StrategyManager;
+    use crate::strategy::StrategyManager;
     use std::time::Duration;
 
     fn create_test_config(load_balance_strategy: LoadBalanceStrategy) -> LoadBalancerConfig {
